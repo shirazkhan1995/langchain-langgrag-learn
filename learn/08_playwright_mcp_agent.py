@@ -10,23 +10,20 @@ What's happening, in one breath:
     fast, deterministic, and token-cheap (no vision model needed).
   - `langchain-mcp-adapters` connects to that MCP server and turns its tools into
     LangChain tools, which we hand to a LangGraph ReAct agent.
-  - Result: an LLM agent that DRIVES A REAL BROWSER from natural language. That is
-    "AI-augmented testing" — the agent can explore an app, author, or self-heal tests.
+  - Result: an LLM agent that DRIVES A REAL BROWSER from natural language.
 
-Target site: https://demo.playwright.dev/todomvc — Playwright's OWN demo TodoMVC app
-(a real interactive web app, perfect for showing an agent perform a real test flow).
+STATEFUL vs STATELESS MCP (the key subtlety, and a great interview point):
+  Playwright MCP is STATEFUL — the open browser/page IS shared state. If each tool
+  call opened its own session (what client.get_tools() does), navigate would open a
+  browser, then snapshot would open a DIFFERENT blank browser — state lost, and the
+  agent loops forever opening/closing browsers. So we hold ONE persistent session
+  open for the whole run via `client.session(...)` + `load_mcp_tools(session)`.
 
-Mental model (ties to lesson 6 + the MCP talk-track):
-    LLM (brain)        -> gpt-4o
-    Orchestration loop -> create_react_agent (the agent<->tools loop)
-    Tools              -> NOT hand-written @tool this time; pulled from an MCP SERVER
-    The MCP server     -> @playwright/mcp, a separate process speaking the protocol
+Target site: https://demo.playwright.dev/todomvc — Playwright's OWN demo TodoMVC app.
 
-Run (in your own terminal — a real Chrome window opens and you watch it work):
+Run (in your own terminal — a real Chrome window opens and STAYS open):
     export OPENAI_API_KEY=sk-...
     python learn/08_playwright_mcp_agent.py
-
-First run downloads @playwright/mcp via npx (needs internet).
 """
 
 import asyncio
@@ -35,6 +32,7 @@ import os
 
 from langchain.chat_models import init_chat_model
 from langchain_mcp_adapters.client import MultiServerMCPClient
+from langchain_mcp_adapters.tools import load_mcp_tools
 from langgraph.prebuilt import create_react_agent
 
 SITE = "https://demo.playwright.dev/todomvc"
@@ -64,7 +62,6 @@ def find_chromium() -> str | None:
 
 async def main() -> None:
     # 1) Point at the Playwright MCP server. `npx` launches it as a stdio subprocess.
-    #    The N+M win: we wrote zero browser tools — we connect to a standard server.
     #    Headed by default so a window opens; add "--headless" for CI.
     #    --isolated: fresh in-memory profile, so repeated runs don't hit a
     #    "browser already in use" profile lock.
@@ -77,34 +74,43 @@ async def main() -> None:
         {"playwright": {"command": "npx", "args": args, "transport": "stdio"}}
     )
 
-    # 2) Load the MCP server's tools as LangChain tools.
-    tools = await client.get_tools()
-    print(f"[mcp] Playwright MCP exposed {len(tools)} browser tools, e.g.:")
-    for t in tools[:6]:
-        print(f"      - {t.name}: {t.description.splitlines()[0][:64]}")
+    # 2) Open ONE persistent session and keep it open for the whole run, so every
+    #    tool call shares the SAME browser (stateful server — see the docstring).
+    async with client.session("playwright") as session:
+        tools = await load_mcp_tools(session)
+        print(f"[mcp] Playwright MCP exposed {len(tools)} browser tools, e.g.:")
+        for t in tools[:6]:
+            print(f"      - {t.name}: {t.description.splitlines()[0][:64]}")
 
-    # 3) Build a ReAct agent (lesson-6 loop, prebuilt) with those tools.
-    system_prompt = (
-        "You control a REAL web browser through the provided tools. "
-        "Always: browser_navigate, then browser_snapshot to read the accessibility "
-        "tree, then act (type/click) and snapshot again to verify. "
-        "Never claim you cannot access websites — you can, via the tools."
-    )
-    # parallel_tool_calls=False: the browser is ONE session — force the agent to
-    # call tools one at a time, or concurrent calls collide ("browser already in use").
-    model = init_chat_model("openai:gpt-4o", temperature=0).bind_tools(
-        tools, parallel_tool_calls=False
-    )
-    agent = create_react_agent(model, tools, prompt=system_prompt)
+        # 3) Build a ReAct agent (lesson-6 loop, prebuilt) with those tools.
+        #    gpt-4o-mini: cheaper + much higher tokens-per-minute than gpt-4o (big
+        #    accessibility-tree snapshots resent each turn exhaust gpt-4o's 30k TPM).
+        #    parallel_tool_calls=False: one browser can't take concurrent calls.
+        system_prompt = (
+            "You control a REAL web browser through the provided tools. "
+            "Always: browser_navigate, then browser_snapshot to read the "
+            "accessibility tree, then act (type/click) and snapshot to verify. "
+            "Work in as few steps as possible. Never claim you can't access websites."
+        )
+        model = init_chat_model(
+            "openai:gpt-4o-mini", temperature=0, max_retries=3
+        ).bind_tools(tools, parallel_tool_calls=False)
+        agent = create_react_agent(model, tools, prompt=system_prompt)
 
-    # 4) A real, interactive test flow on a real app — the MODEL decides the steps.
-    task = (
-        f"Go to {SITE}. Add two todos: 'Write Playwright tests' and 'Ship feature'. "
-        "Then tell me exactly how many items the footer says are left, and list the "
-        "todo texts you see. Be concise."
-    )
-    print(f"\n[task] {task}\n")
-    result = await agent.ainvoke({"messages": [{"role": "user", "content": task}]})
+        # 4) A real, interactive test flow — the MODEL decides the steps.
+        task = (
+            f"Go to {SITE}. Add two todos: 'Write Playwright tests' and 'Ship "
+            "feature'. Then tell me exactly how many items the footer says are left, "
+            "and list the todo texts. Be concise."
+        )
+        print(f"\n[task] {task}\n")
+
+        # recursion_limit caps the agent loop so a stuck run stops cleanly instead
+        # of spinning (a max-iteration guard — the reliability point from §6.5).
+        result = await agent.ainvoke(
+            {"messages": [{"role": "user", "content": task}]},
+            config={"recursion_limit": 20},
+        )
 
     # 5) Show the tool calls the model chose, then the final answer.
     print("=== agent trajectory (tool calls the MODEL chose) ===")

@@ -565,6 +565,48 @@ calls). Verified: MCP connects, 23 tools load, agent sequences navigate→type�
 (Pages only render with a real display session — run it in your own terminal, which has
 one; a sandboxed/CI wrapper leaves the page on about:blank.)
 
+### Challenges I hit building this (war stories — Chandan will value these)
+Each is a real bug from wiring an agent to Playwright MCP, with the fix and the lesson.
+
+1. **Infinite open/close loop — stateful vs stateless MCP (the big one).**
+   *Symptom:* the browser opened, navigated, closed instantly, and the agent looped
+   forever. *Cause:* `client.get_tools()` opens a NEW MCP session per tool call, so
+   `navigate` and `snapshot` hit *different* browser instances — state lost every step.
+   *Fix:* hold ONE persistent session for the whole run —
+   `async with client.session("playwright") as s: tools = await load_mcp_tools(s)`.
+   *Lesson:* **Playwright MCP is a stateful server — the open browser IS shared state;
+   you must keep one session alive.** Stateful vs stateless is the key MCP design call.
+
+2. **Concurrent tool calls collided.** *Symptom:* "Browser is already in use." *Cause:*
+   the agent emitted two `browser_type` calls in parallel; one browser session can't
+   take concurrent actions. *Fix:* `bind_tools(tools, parallel_tool_calls=False)`.
+   *Lesson:* a single shared resource (the browser) demands serialized tool calls.
+
+3. **Profile lock across runs.** *Symptom:* "browser already in use" on a fresh run.
+   *Cause:* a persistent user-data profile stayed locked from a prior run. *Fix:*
+   `--isolated` (fresh in-memory profile). *Lesson:* isolate state between runs.
+
+4. **Token-rate (429) blowups → model choice.** *Symptom:* `RateLimitError: ... TPM
+   Limit 30000`. *Cause:* each `browser_snapshot` returns a large accessibility tree,
+   and the ReAct loop resends full history every turn — gpt-4o's 30k TPM is exhausted
+   fast. *Fix:* switch to **gpt-4o-mini** (higher TPM, cheaper) + `max_retries`; if it
+   still spikes, trim snapshot content / reduce tools. *Lesson:* agent loops multiply
+   tokens — model tier and context size are reliability/cost levers, not afterthoughts.
+
+5. **Runaway loops.** *Fix:* `recursion_limit` on `agent.ainvoke(...)` — a
+   max-iteration guard so a stuck agent stops cleanly (ties to §6.5 reliability).
+
+6. **Browser setup friction.** Hit "`chrome` not found" / "`chrome-for-testing` not
+   installed" and a blocked `file://` URL. *Fixes:* point `--executable-path` at an
+   installed Chromium (or `npx playwright install chromium`); serve test pages over
+   `http://localhost` or use a real site — Playwright MCP blocks `file://` for security.
+
+**One-line version for the interview:** *"The subtle one was that Playwright MCP is
+stateful — I had to hold a single persistent session so the agent's navigate and
+snapshot share one browser; loading tools per-call made it spawn a new browser each
+step and loop forever. I also had to serialize tool calls and drop to gpt-4o-mini
+because the accessibility-tree snapshots blew the token-per-minute limit."*
+
 ---
 
 ## 7. File-by-file (what each proves)
