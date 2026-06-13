@@ -110,7 +110,7 @@ def search_api_docs(query: str) -> str:
 agent_llm = init_chat_model("openai:gpt-4o", temperature=0).bind_tools([search_api_docs])
 msgs = [
     SystemMessage(content="Use search_api_docs to ground every answer. Don't guess."),
-    HumanMessage(content="If I send 200 requests in a minute, what error do I get?"),
+    HumanMessage(content="What is 2 + 2 ?"),
 ]
 step1 = agent_llm.invoke(msgs)              # model decides to call the tool
 if step1.tool_calls:
@@ -121,4 +121,6 @@ if step1.tool_calls:
     msgs += [step1, ToolMessage(content=result, tool_call_id=call["id"])]
     final = agent_llm.invoke(msgs)          # model answers using what it retrieved
     print(f"  agentic answer: {final.content}")
+else:
+    print(f" {step1.content}")
 print("\n  -> retrieval became a decision, not a fixed first step. That's agentic RAG.")

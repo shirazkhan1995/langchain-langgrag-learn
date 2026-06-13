@@ -11,16 +11,27 @@ Run:
 Pipeline:
     1. CHUNK    : split a long log into overlapping windows (RecursiveCharacterTextSplitter)
     2. EMBED    : turn each chunk into a vector (OpenAIEmbeddings)
-    3. STORE    : put vectors in a vector store (InMemory here; FAISS/Chroma/pgvector in prod)
+    3. STORE    : persist vectors in Chroma (on-disk, survives restarts)
     4. RETRIEVE : embed the question, fetch top-k nearest chunks
     5. GENERATE : answer grounded ONLY in those chunks
+
+VECTOR STORE CHOICE — why Chroma here:
+    InMemoryVectorStore -> demos/unit tests only (lost on exit)
+    Chroma              -> local, persistent, free — embed once, reuse across runs
+                          RIGHT CHOICE for a single-spec / single-log QA tool
+    FAISS               -> local, fast, but index must be manually serialised
+    pgvector            -> if you already run Postgres; keeps everything in one DB
+    Pinecone / Weaviate -> managed, scalable, filtered search — overkill unless
+                          you have thousands of specs across many teams
 
 WHITEBOARD TALK-TRACK (memorize the trade-offs in the comments below).
 """
 
+import shutil
+
 from langchain.chat_models import init_chat_model
+from langchain_chroma import Chroma
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_core.vectorstores import InMemoryVectorStore
 from langchain_openai import OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
@@ -37,6 +48,8 @@ LOG = """
 2026-06-06 09:06:30 WARN  api.ratelimit client 5.5.5.5 throttled: 120 req/min exceeds 100
 """.strip()
 
+CHROMA_DIR = ".chroma_logs"  # persisted to disk in this folder
+
 # 1) CHUNK -------------------------------------------------------------------
 # chunk_size = max chars per chunk. chunk_overlap = chars repeated between
 # neighbours so a fact split across a boundary isn't lost.
@@ -48,14 +61,19 @@ chunks = splitter.split_text(LOG)
 print(f"[chunk] split log into {len(chunks)} chunks")
 
 # 2+3) EMBED + STORE ---------------------------------------------------------
-# Embedding model choice: text-embedding-3-small is cheap/fast and fine for most
-# retrieval; -3-large is more accurate for nuanced semantic search.
-# Vector store choice:
-#   InMemoryVectorStore -> demos/tests (what we use here)
-#   FAISS / Chroma      -> local, single-machine, free
-#   pgvector / Pinecone / Weaviate -> production, persistent, scalable, filtered search
-store = InMemoryVectorStore(OpenAIEmbeddings(model="text-embedding-3-small"))
-store.add_texts(chunks)
+# Chroma persists to CHROMA_DIR automatically. In production you would skip
+# re-indexing if the collection already exists (check collection.count() > 0).
+# For this lesson we wipe and re-index on every run so it stays self-contained.
+shutil.rmtree(CHROMA_DIR, ignore_errors=True)   # fresh index each demo run
+
+embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+store = Chroma.from_texts(
+    texts=chunks,
+    embedding=embeddings,
+    persist_directory=CHROMA_DIR,   # <- this line is the only Chroma-specific change
+    collection_name="service_logs",
+)
+print(f"[store]  indexed {store._collection.count()} chunks → {CHROMA_DIR}/")
 
 # 4) RETRIEVE ----------------------------------------------------------------
 question = "Why did GET /pets start returning 500 errors around 09:03?"

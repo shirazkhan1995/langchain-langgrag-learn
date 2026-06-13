@@ -79,6 +79,59 @@ with one conditional — that's correct engineering, not a limitation.
 
 ---
 
+## 2.5 Core components of an agent
+
+An agent is an LLM that runs in a **loop**, choosing its own actions until a goal is
+met. Six components — each mapped to this repo's code:
+
+1. **Model (reasoning core / "brain")** — the LLM that decides *what to do next*. It
+   reasons and emits decisions; it never executes anything itself. → `init_chat_model(...).bind_tools(...)`.
+2. **Instructions (policy / system prompt)** — role, constraints, and *when* to use
+   which tool. Shapes behaviour without retraining. → the `SystemMessage`.
+3. **Tools (capabilities / actions)** — functions it calls to fetch info or affect the
+   world; the model sees each tool's docstring + arg schema. → `@tool` functions in `learn/06`.
+4. **Memory** — *short-term*: the running transcript incl. tool results, so the model
+   sees the whole trajectory (→ `Annotated[list, add_messages]`); *long-term*:
+   persistence across sessions via a checkpointer (→ `InMemorySaver` in `agent_v2.py`)
+   or a vector store of past interactions (= RAG applied to memory).
+5. **Orchestration / control loop (engine)** — drives reason → act → observe → repeat,
+   and decides *when to stop*. This is the ReAct pattern. → the LangGraph `agent ↔ tools`
+   cycle with the `should_continue` router. Without the loop it's one LLM call, not an agent.
+6. **Planning / reasoning** — *implicit/interleaved* (ReAct: decide one step at a time,
+   reacting to each result — `learn/06`) vs *explicit* (plan-and-execute: write the full
+   plan upfront, then run it — better for long tasks, less adaptive).
+
+**Spoken answer:**
+> "An agent is an LLM running in a loop that can take actions. Six components: the
+> **model** is the reasoning core — it decides but never executes. **Instructions** are
+> its policy — role, constraints, when to use which tool. **Tools** are its hands —
+> functions exposed via their schemas. **Memory** is short-term (the running message
+> history, so it sees the whole trajectory) plus long-term (persistence across sessions
+> via a checkpointer or a vector store of past interactions). The **orchestration loop**
+> is the engine — reason, act, observe, repeat — and critically decides when to stop.
+> And **planning** is how it decomposes the goal, interleaved as in ReAct or as an
+> explicit upfront plan. In my agent: gpt-4o with bound tools, Python tool functions,
+> append-only message state, a LangGraph agent↔tools loop, and a checkpointer for persistence."
+
+**Likely follow-ups:**
+- *How does it decide when to stop?* — "When the model returns no more tool calls. In
+  practice also a **max-iteration cap** so a confused agent can't loop forever, and
+  sometimes an explicit `finish` tool."
+- *What stops infinite loops / runaway cost?* — "Max-iteration guard + per-run
+  token/cost budgets. Matters most for tool-calling agents — a reliability *and* cost control."
+- *Short-term vs long-term memory?* — "Short-term = the message list for the current
+  task, in context. Long-term outlives the session, stored and *retrieved* when relevant
+  — essentially RAG over the agent's own history."
+- *Where does planning happen in ReAct?* — "Implicit and interleaved — it decides the
+  next action after each observation. Plan-and-execute commits to a full plan first."
+- *How is this different from a workflow?* — "A workflow's control flow is hardcoded by
+  me; an agent's is chosen by the model at runtime via the loop. The loop + tool-choice
+  is what makes it an agent."
+- *Riskiest component?* — "Tools — that's where it touches real systems. So execution
+  stays in my code, and high-risk tools sit behind a human-in-the-loop gate."
+
+---
+
 ## 3. Structured output (why every LLM step uses Pydantic)
 
 A raw `llm.invoke()` returns a **string** — fragile to parse. `.with_structured_output(Schema)`
@@ -145,22 +198,154 @@ the model answers from *your* corpus instead of its memory. **No fine-tuning.**
 **The pipeline:** load → **chunk** → **embed** → **store** (vector DB) → **retrieve**
 (similarity search) → **generate** (stuff retrieved chunks into the prompt).
 
-### Chunking (`learn/05`)
-- `chunk_size` = max chars/chunk; `chunk_overlap` = chars repeated across boundaries
-  so a fact split across two chunks isn't lost.
-- Trade-off: **small chunks** → precise retrieval but lose context; **big chunks** →
-  more context but more tokens and diluted relevance. Start ~500–1000 chars, 10–20%
-  overlap, then tune by evaluation.
+### Chunking — deep dive (`learn/05`)
 
-### Retrieval strategies (`learn/07`)
-- **Similarity top-k (with scores):** the score lets you threshold ("if best score
-  < X, say I don't know"). Tuning `k` is a recall/precision trade-off.
-- **MMR (Maximal Marginal Relevance):** relevant **and** diverse results — avoids 3
-  near-duplicate chunks.
-- **Hybrid search:** combine BM25 keyword + vector search; catches exact terms
-  (error codes, IDs) embeddings miss.
-- **Re-ranking:** over-fetch (k=20), then a cross-encoder re-scores the top hits.
-- **Metadata filtering:** restrict retrieval by tags (service, env, date).
+**Why chunking exists at all** (say this first if asked):
+1. Embedding models have an input limit — you can't embed a 50-page doc as one vector.
+2. One vector for a huge doc is a *blurry average* — a "rate limits" query won't match
+   sharply against a vector representing an entire manual.
+3. You want to retrieve the relevant *piece*, not the whole book, to keep the
+   generation prompt focused and cheap.
+
+So a chunk must be three things at once: **small enough to embed**, **specific enough
+to match a query sharply**, **self-contained enough to be useful when retrieved alone.**
+
+**The one tension everything orbits:**
+- **Too small** → sharp match, but the chunk lacks context to answer; facts get split
+  across boundaries.
+- **Too big** → rich context, but a blurry embedding (diluted relevance), more tokens,
+  and irrelevant text dragged in alongside the answer.
+
+There is **no universal chunk size.** Each strategy below is a different way to
+navigate that precision-vs-context trade-off.
+
+**1. Fixed-size** — cut every N chars/tokens, ignoring the text entirely.
+  - *Pros:* dead simple, fast, predictable size, no assumptions.
+  - *Cons:* splits words/sentences/facts blindly; mixes unrelated topics in one chunk.
+    `chunk_overlap` (repeat ~10–20% between neighbours) is the band-aid so a fact
+    severed at a boundary still appears whole in one chunk — at the cost of redundancy.
+  - *Use when:* truly structureless streams (OCR dumps). Mostly a baseline.
+
+**2. Recursive character splitting** (`RecursiveCharacterTextSplitter`, the default) —
+  same size target, but cut at natural seams in priority order: paragraph (`\n\n`) →
+  sentence (`. `) → word → raw char. Hits the size budget while cutting at seams, not
+  mid-thought.
+  - *Pros:* respects language boundaries; same speed/simplicity as fixed-size; good for ~80% of cases.
+  - *Cons:* still size-driven not meaning-driven; treats `# Header` as plain text.
+  - *Use when:* your **default** for prose — docs, tickets, logs. Start here unless you have a reason not to.
+
+**3. Document-structure-aware** — split on the document's own structure (Markdown
+  headers, HTML, code boundaries, JSON keys, OpenAPI endpoints). Each section becomes
+  one chunk, with the header stored as **metadata**.
+  - *Pros:* chunks align with real semantic units; header metadata enables filtering
+    ("search only the Auth section"); near-zero "split a fact in half" risk.
+  - *Cons:* needs the doc to *have* structure; a giant section may still need an
+    inner size split; useless on raw logs.
+  - *Use when:* structured sources — **OpenAPI/Swagger specs**, Markdown/HTML docs,
+    source code, Confluence. First choice whenever structure exists.
+
+**4. Semantic chunking** — embed each sentence, cut where similarity between
+  consecutive sentences drops sharply (a topic shift), so boundaries match meaning.
+  - *Pros:* boundaries match true topic shifts; works on flowing prose with no headers.
+  - *Cons:* expensive (embed every sentence just to decide cuts); unpredictable chunk sizes.
+  - *Use when:* long, unstructured docs that shift topics mid-paragraph — papers,
+    long incident write-ups, transcripts.
+
+**5. Parent-document retrieval (small-to-big)** — the strategy that *resolves* the
+  tension instead of compromising: index/search on **small** chunks (sharp matching),
+  but return the **larger parent** section to the LLM (rich context).
+  - *Pros:* small-chunk precision + large-chunk context simultaneously; kills the
+    "retrieved the right line but missed surrounding context" failure.
+  - *Cons:* more complex (maintain chunk→parent mapping); more storage.
+  - *Use when:* answer quality is critical and docs have a sentence→section hierarchy.
+
+**6. Late chunking** (advanced/bonus) — embed the **whole doc first** with a
+  long-context embedder (so every token's vector already "saw" the full document),
+  *then* pool token-embeddings per chunk. Each small chunk keeps document-level context
+  in its vector — fixes "lost context across boundaries" at the *embedding* level.
+  Know it exists; not expected to have built it.
+
+**Decision flow:**
+```
+Has explicit structure (headers/code/JSON/OpenAPI)? → Structure-aware
+Long unstructured prose that shifts topics?         → Semantic
+Need sharp retrieval AND full context, quality key? → Parent-document (small-to-big)
+Just need a solid default?                          → Recursive, ~500–1000 chars, 10–20% overlap
+Truly raw structureless stream?                     → Fixed-size + overlap (last resort)
+```
+
+**The two sentences that win the question:**
+1. "Chunking navigates one tension — too small and the chunk lacks context, too big
+   and the embedding gets blurry and retrieval drags in noise."
+2. "There's no universal size; I match the strategy to the document structure, then
+   **tune it against retrieval recall and groundedness metrics** — chunking is an
+   upstream knob I tune against eval, not a fixed guess."
+
+### Retrieval strategies — deep dive (`learn/07`)
+
+**The basic mechanism (say this first):** embed the *query* (a query is **embedded,
+not chunked** — chunking is a document-side concern) into the same vector space as the
+documents, then find the nearest chunk vectors by **cosine similarity**. The top-k
+nearest become the generation context. Everything below modifies this baseline.
+
+**1. Top-k similarity search** (the default) — return the k nearest vectors.
+  - Use `similarity_search_with_score` so you get the **score** — it lets you set a
+    confidence threshold ("if best score < X, the answer probably isn't in the corpus
+    — say so instead of guessing").
+  - Tuning `k` is a recall/precision trade-off: too small → miss the answer; too big →
+    dilute relevance, more cost/latency.
+  - *Failure mode:* with redundant chunks, all top-k can be near-duplicates — wasted
+    context budget, no new information.
+
+**2. MMR (Maximal Marginal Relevance)** — picks results that are relevant **AND**
+  mutually diverse (penalizes a candidate for being too similar to ones already
+  chosen). `fetch_k` = candidates considered before diversifying.
+  - *Use when:* the corpus has redundancy and you'd otherwise retrieve 3 copies of the
+    same fact instead of 3 different aspects of the answer.
+
+**3. Hybrid search (BM25 + vector)** — vector search is great at *semantic* similarity
+  but weak on **exact tokens** (error codes, IDs, versions — "HTTP 429", "petId=9999").
+  BM25 (classic keyword/TF-IDF) nails those. Run both, merge/re-rank (e.g. reciprocal
+  rank fusion).
+  - *Use when:* technical corpora — API docs, logs, code — where exact identifiers
+    matter. Highly relevant to SDET work (logs are full of error codes).
+
+**4. Re-ranking** — two stages: cheaply over-fetch a large candidate set (k=20–50)
+  with vector search, then a **cross-encoder** scores each (query, chunk) pair *jointly*
+  and keeps the top 3–5.
+  - *Why two stages:* cross-encoders are far more accurate (they see query+doc together,
+    not as separate vectors) but too slow to run over the whole corpus — so only on the
+    shortlist.
+
+**5. Metadata filtering** — tag each chunk at index time (service, doc_type, version,
+  env, date). Retrieval = filter by metadata **first**, then similarity search within
+  that subset.
+  - *Use when:* multi-source/multi-tenant corpora — don't let a "staging" doc answer a
+    "production" question.
+
+**6. Agentic retrieval** — retrieval becomes a **tool** the model decides whether to
+  call, what query to issue (it can rewrite the user's question), and whether to call
+  again with a refined query (`learn/07` Part C; also `learn/06` pattern).
+  - *Use when:* query complexity varies — sometimes one retrieval suffices, sometimes
+    none is needed, sometimes several. Strongest answer for a 50/50 Agents+RAG interview.
+
+**The "mature pipeline" answer (if asked to design retrieval for production):**
+> "Metadata filter first to scope the search, hybrid search (BM25 + vector) for
+> first-pass recall, over-fetch ~20–30 candidates, re-rank with a cross-encoder down to
+> the top 3–5, feed those to generation. If the groundedness eval shows the answer
+> isn't supported, that signals either retrieval missed (tune k/chunking) or the query
+> needs agentic rewriting."
+
+**Trade-off table (rapid-fire):**
+
+| Technique | Solves | Cost |
+|---|---|---|
+| Top-k similarity | Baseline semantic match | Low |
+| MMR | Redundant/duplicate chunks | Low |
+| Hybrid (BM25+vector) | Exact terms/IDs embeddings miss | Medium (two indexes) |
+| Re-ranking | Embedding similarity ≠ true relevance | Medium–high (cross-encoder pass) |
+| Metadata filtering | Wrong-source/stale results | Low (needs good metadata) |
+| Agentic retrieval | Over/under-retrieving; bad initial queries | Higher latency (extra LLM round-trip) |
 
 ### Embeddings & vector stores
 - Embedding models: `text-embedding-3-small` (cheap/fast, fine for most) vs `-large`
@@ -188,6 +373,127 @@ the model answers from *your* corpus instead of its memory. **No fine-tuning.**
 Plain RAG *always* retrieves. **Agentic RAG** makes retrieval a **tool** the agent may
 or may not call (and can call repeatedly, refining the query). It's the intersection
 of both scored buckets — a strong thing to demo.
+
+---
+
+## 6.5 Handling hallucinations + production challenges
+
+### Hallucinations — defense in depth (prevent → detect → recover)
+
+Opener: *"There's no single fix — it's defense in depth. And most RAG hallucinations
+are really **retrieval failures**, so I fix retrieval first."*
+
+**Layer 1 — Prevention:**
+- **Grounding via RAG** — give the model the facts so it doesn't reach into memory.
+- **Strict prompting** — "Answer ONLY from context; if absent, say 'not in docs'"
+  (`learn/05`, `learn/07`).
+- **Low temperature** (`temperature=0`) — reduces drift (doesn't eliminate; not fully deterministic).
+- **Retrieval quality** — if the right chunk is never retrieved, the model invents.
+  Fix upstream: better chunking, hybrid search, re-ranking.
+
+**Layer 2 — Detection:**
+- **Groundedness / faithfulness judge (LLM-as-judge)** — `learn/07`'s `Groundedness`
+  model verifies every claim is supported, returns `unsupported_claims`; demonstrated
+  catching a planted lie. **Headline answer.**
+- **Confidence thresholds** — use the retrieval **score**; if best chunk < threshold,
+  refuse instead of guessing.
+- **Citations** — make the model cite which chunk supports each claim, then verify it exists.
+
+**Layer 3 — Recovery:**
+- **Refuse gracefully** — "not enough info" beats a confident wrong answer (a false
+  "real bug" is worse than "unsure" for an SDET tool).
+- **Retry with better retrieval** — agentic RAG rewrites the query and searches again.
+- **Human-in-the-loop** for high-stakes — flag the ungrounded answer, don't auto-trust.
+
+**Agent-specific:** agents can hallucinate *tool calls* (invent a tool/bad args). The
+structural defense: the model can only call **bound tools**, and the **arg schema
+validates** the call before execution — malformed calls are rejected, not run.
+
+**One-liner:** *"Prevent with grounding and strict prompts, detect with a groundedness
+judge and score thresholds, recover by refusing or escalating. Most RAG hallucinations
+are retrieval failures, so retrieval is the first thing I fix."*
+
+### Other production challenges (with answers)
+
+| Challenge | Problem | Handling |
+|---|---|---|
+| **Non-determinism / reproducibility** | Same input → different output | `temperature=0`, **pin model version** (`gpt-4o-2024-08-06`), log all I/O, eval suites |
+| **Cost & latency** | LLM calls slow/expensive; loops multiply them | Cache, smaller models for easy steps, trim context, **max-iteration caps** |
+| **Prompt injection / security** | Malicious text in a doc/input hijacks the agent | Treat retrieved content as **untrusted data, not instructions**; least-privilege + sandboxed tools; no secrets in prompts; output guardrails |
+| **Context window limits** | Too much text overflows the window | Retrieve fewer/better chunks (re-ranking); summarize/trim history; "lost in the middle" → key context at the edges |
+| **Evaluation** | Testing a non-deterministic system in CI | LLM-as-judge + golden dataset; evals as a **CI gate** with thresholds; regression baselines |
+| **Reliability / error handling** | Timeouts, rate limits, malformed output | Retry w/ backoff; structured-output validation + regenerate (`agent_v2` retry loop); fallbacks |
+| **Runaway agent loops** | Agent calls tools forever | **Max-iteration guard** + per-run cost/token budget |
+| **Data freshness** | RAG index goes stale | Incremental re-index (hash docs, re-embed only changes); TTL |
+| **Observability** | Hard to debug *why* the agent acted | **Tracing** (LangSmith) — log every step, tool call, LLM I/O |
+
+**Tie to your code:** non-determinism → temp=0 + pinning · reliability → `agent_v2`
+retry loop · runaway loops → max-iteration cap · security → tool execution stays in
+your code behind the HITL gate.
+
+---
+
+## 6.6 DeepEval framework — YOUR HEADLINE ASSET
+
+Separate repo: `Combined folder/evals`. A **production** LLM-eval harness. Lead with
+THIS for any evaluation / "how do you know your LLM output is good" / "how do you
+connect testing with GenAI" question. It bridges all three scored buckets (Python eval
++ TypeScript/Playwright client + CI).
+
+### What it is
+LLM evaluation harness built on **DeepEval** (Confident AI). Provides `LLMTestCase`,
+an `evaluate()` runner, pytest integration, and metrics incl. RAG-specific ones
+(faithfulness, answer relevancy, contextual precision/recall, hallucination). You used
+two metric styles: **GEval** and **DAG**.
+
+### GEval vs DAG (the key contrast — they WILL push here)
+- **GEval** = LLM-as-judge. Natural-language criteria → CoT + token **logprobs** →
+  0–1 score. Flexible, but a single fuzzy judgment.
+- **DAG** (`DeepAcyclicGraph`) = a **decision tree** of evaluation:
+  `TaskNode` (extract data) → `BinaryJudgementNode` (yes/no) →
+  `NonBinaryJudgementNode` (excellent/good/adequate/shallow) → `VerdictNode` (score).
+  Example (`report_quality.py`): extract 5 claims → addresses prompt? → claims
+  specific & evidence-backed? → rate depth → score.
+- **Why DAG for trust:** each decision is **isolated, auditable, and the path to the
+  score is traceable** → explainable + reproducible (the exact Adobe-JD language).
+- **Honesty nuance (say it):** "Structure, branching, and scoring are deterministic and
+  explainable; each node is still an LLM call, so individual judgments aren't perfectly
+  deterministic — but isolating each decision makes it far more reliable and auditable
+  than one monolithic score, with per-node thresholds." Don't overclaim "fully deterministic."
+
+### Architecture (engineering signals to name)
+Config-driven **YAML** (declarative evals) · metric **factory + registry**
+(`match/case` dispatch) · multi-format **loaders** (JSON/PDF/Deep Research) ·
+provider-agnostic via **LiteLLM** · **FastAPI** REST server · **Docker** · GitHub
+Actions **CI** (py3.10–3.12 + TS type-check) · pytest · ruff · pinned deps.
+
+### Playwright × GenAI bridge (your unique edge)
+REST API + a **TypeScript client** + a **combined Playwright+evals Docker image** +
+**CI sidecar** → your Playwright/TS suite calls the Python evals over HTTP and gates
+LLM-content quality in the same pipeline as E2E tests. This is the JD's exact intersection.
+
+### The logprobs war story ("hardest problem" answer — rehearse verbatim)
+> "DeepEval's GEval requests `logprobs` to calibrate the confidence of its scores.
+> Gemini via the OpenAI-compatible endpoint doesn't support logprobs, so every eval hit
+> an error and a 6-attempt retry loop — slow and noisy. I read DeepEval's source, found
+> `generate_raw_response`, and subclassed `LiteLLMModel` to short-circuit it to
+> `(None, 0.0)`, so DeepEval cleanly falls back to text-based scoring." (`src/evals/models.py`)
+Signals: logprobs = model confidence, reading library internals, provider-compat debugging.
+
+### Walkthrough script (~2.5 min)
+1. **Problem:** can't exact-match non-deterministic LLM output — how do you QA quality
+   at scale, in CI, explainably?
+2. **Approach:** DeepEval; GEval for flexible judging, DAG for explainable/auditable scoring.
+3. **Example:** walk the `report_quality` DAG node by node.
+4. **Architecture:** config-driven YAML, metric factory, loaders, LiteLLM.
+5. **Productionization + Playwright bridge:** FastAPI server, TS client, CI sidecar, Docker.
+6. **War story:** the logprobs wrapper.
+7. **Close:** "This is how I make non-deterministic LLM output testable — explainable,
+   CI-gated, reproducible quality scoring."
+
+### Files to re-read before the interview
+`src/evals/dags/report_quality.py` (the DAG) · `src/evals/models.py` (logprobs wrapper)
+· `src/evals/metrics/factory.py` (registry + dispatch).
 
 ---
 
