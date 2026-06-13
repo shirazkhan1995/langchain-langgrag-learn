@@ -497,6 +497,76 @@ Signals: logprobs = model confidence, reading library internals, provider-compat
 
 ---
 
+## 6.7 Playwright MCP + AI-augmented testing (tailored for Chandan's round)
+
+Interviewer = **Chandan Ghosh** (PAC India, ~30K LinkedIn followers — an AI-testing
+voice). He's hands-on Playwright + AI-forward. The hot topic in his niche is
+**Playwright MCP + LLM**. This is the synthesis of all three of your buckets — own it.
+Demo: `learn/08_playwright_mcp_agent.py` (LangGraph agent driving a real browser via MCP).
+
+### What Playwright MCP is
+Microsoft ships an official MCP server, **`@playwright/mcp`**, that exposes browser
+automation as **MCP tools** (`browser_navigate`, `browser_click`, `browser_type`,
+`browser_snapshot`, `browser_fill_form`, … ~23 tools). An LLM agent connects as a
+client and drives a real browser from natural language.
+
+### The key design point (say this — it's the differentiator)
+It drives the browser via the **accessibility tree (a structured snapshot), NOT
+screenshots**. So it's **fast, deterministic, and token-cheap** — no vision model
+needed, and the model acts on stable element roles/names rather than pixel guesses.
+
+### How it wires together (ties to lesson 6 + the MCP talk-track)
+```
+LLM (brain)        -> gpt-4o
+Orchestration loop -> create_react_agent (agent<->tools loop, lesson 6)
+Tools              -> NOT hand-written @tool — pulled from the Playwright MCP SERVER
+Bridge             -> langchain-mcp-adapters turns MCP tools into LangChain tools
+```
+`MultiServerMCPClient({...})` launches `npx @playwright/mcp` over stdio →
+`await client.get_tools()` → `create_react_agent(model, tools)`.
+
+### Why it matters for testing (AI-augmented testing)
+- **NL test authoring** — describe a flow in English; the agent drives the browser and
+  you capture the steps as a test.
+- **Self-healing / exploration** — the agent navigates by accessibility roles, so it's
+  resilient to brittle selectors; it can explore an app and surface issues.
+- **Where it fits vs classic Playwright:** you still keep deterministic, committed
+  Playwright specs for regression; the agent is for *authoring, exploration, and
+  triage* — not for replacing your stable suite. (Say this — it shows judgment.)
+
+### Your talk-track (the dream-question answer)
+> "That's the intersection I've been working in. MCP standardizes the *tools* layer of
+> an agent, so Playwright MCP turns the browser into a tool an LLM can drive — via the
+> accessibility tree, so it's deterministic and cheap, not screenshot-based. I've built
+> the agent side — a LangGraph tool-calling loop — and the Playwright side separately;
+> combining them, an agent reads a user story, drives the browser through Playwright
+> MCP, and self-authors or self-heals tests. I'd keep my committed Playwright specs for
+> regression and use the agent for authoring and triage — and close the loop with my
+> DeepEval harness to score whether the generated tests are actually valid."
+
+### Likely follow-ups
+- *Screenshots vs accessibility tree?* — "Accessibility tree: structured, deterministic,
+  token-cheap, no vision model; screenshots are pixel-based, costly, flakier."
+- *Would you let an agent run your whole suite?* — "No — deterministic specs for
+  regression; agent for authoring/exploration/triage. Don't pay for agency you don't need."
+- *How is this different from just calling Playwright in code?* — "MCP is the *standard
+  protocol* so any LLM client gets the tools with no custom glue — N+M, not N×M."
+
+### Run it (in YOUR terminal — a real Chrome window opens)
+```bash
+export OPENAI_API_KEY=sk-...
+python learn/08_playwright_mcp_agent.py
+```
+Target: Playwright's own demo app `https://demo.playwright.dev/todomvc`. The agent
+navigates, adds two todos, and reports the remaining count — a real interactive test
+flow it sequences itself. Key flags: `--isolated` (fresh profile, no lock) and the
+model bound with `parallel_tool_calls=False` (one browser session can't take concurrent
+calls). Verified: MCP connects, 23 tools load, agent sequences navigate→type→snapshot.
+(Pages only render with a real display session — run it in your own terminal, which has
+one; a sandboxed/CI wrapper leaves the page on about:blank.)
+
+---
+
 ## 7. File-by-file (what each proves)
 
 | File | Bucket | Teaches |
