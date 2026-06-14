@@ -1,0 +1,44 @@
+# E2E run of the Playwright MCP agent (learn/08) — headless, in CI.
+#
+# Production choice worth saying in an interview: this is an LLM-driven browser
+# flow, so every run COSTS API TOKENS. We do NOT run it on every push. It's gated
+# behind a manual trigger plus a weekly smoke run — the same way you'd gate any
+# expensive/flaky external-dependency e2e (real LLM + real browser + real network)
+# rather than block PRs on it.
+name: playwright-mcp-agent (e2e)
+
+on:
+  workflow_dispatch: {} # run on demand from the Actions tab
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC — weekly smoke test
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      # Installs the Chromium revision the MCP server expects, plus the Linux system
+      # libraries a headless browser needs (--with-deps). Idempotent and cross-platform.
+      - name: Install Chromium for Playwright
+        run: npx -y playwright install --with-deps chromium
+
+      - name: Run the agent (headless)
+        env:
+          # Add OPENAI_API_KEY under repo Settings -> Secrets -> Actions.
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          HEADLESS: "1" # CI=true already forces this; explicit for clarity
+        run: python learn/08_playwright_mcp_agent.py

@@ -552,18 +552,37 @@ Bridge             -> langchain-mcp-adapters turns MCP tools into LangChain tool
 - *How is this different from just calling Playwright in code?* — "MCP is the *standard
   protocol* so any LLM client gets the tools with no custom glue — N+M, not N×M."
 
-### Run it (in YOUR terminal — a real Chrome window opens)
+### Run it
 ```bash
+npx playwright install chromium          # once per machine (cross-platform)
 export OPENAI_API_KEY=sk-...
-python learn/08_playwright_mcp_agent.py
+python learn/08_playwright_mcp_agent.py   # headless by default; HEADED=1 to watch live
 ```
 Target: Playwright's own demo app `https://demo.playwright.dev/todomvc`. The agent
 navigates, adds two todos, and reports the remaining count — a real interactive test
 flow it sequences itself. Key flags: `--isolated` (fresh profile, no lock) and the
 model bound with `parallel_tool_calls=False` (one browser session can't take concurrent
 calls). Verified: MCP connects, 23 tools load, agent sequences navigate→type→snapshot.
-(Pages only render with a real display session — run it in your own terminal, which has
-one; a sandboxed/CI wrapper leaves the page on about:blank.)
+You "see" the run via `learn/_artifacts/final-page.png` (a screenshot the script saves
+while the session is still open) — the same way you'd inspect a headless CI run.
+
+**Run-anywhere / CI (production point).** The script decouples from its environment so
+the same file runs on macOS, Linux, and CI unchanged: (1) **browser binary** — instead
+of hardcoding OS-specific paths, `find_chromium()` recurses the per-OS Playwright cache
+and matches known binary names (handles `chrome-linux` vs `chrome-linux64`, mac/arm), or
+you set `PLAYWRIGHT_CHROMIUM_PATH`; (2) **headless by default, headed opt-in** — `@playwright/mcp`
+launches *headless over stdio* regardless of its "headed by default" help, so the script
+sets it **explicitly** via a `--config` file (`launchOptions.headless`) instead of trusting
+the default; headless is the default because it runs the same task reliably everywhere
+(local, Wayland, containers, CI), and `HEADED=1` opts into a visible window where the
+environment supports it; (3) **observe headless via artifacts** — a screenshot (and the
+per-step `.yml` snapshots MCP writes to `--output-dir`) stand in for a live window, which
+is what CI uses anyway; (4) **CI gating** — `.github/workflows/playwright-mcp-agent.yml`
+runs it headless via `npx playwright install --with-deps chromium`, but on
+`workflow_dispatch` + weekly cron, *not* every push — a real LLM + real browser + real
+network e2e costs tokens and is flaky, so you don't block PRs on it. *Lesson: don't trust
+a tool's context-dependent default or assume a screen; set behavior explicitly, observe
+via artifacts, and gate expensive external-dependency e2e behind manual/scheduled triggers.*
 
 ### Challenges I hit building this (war stories — Chandan will value these)
 Each is a real bug from wiring an agent to Playwright MCP, with the fix and the lesson.

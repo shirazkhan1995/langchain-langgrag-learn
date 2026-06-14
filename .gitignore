@@ -38,4 +38,7 @@ env/
 # ChromaDB / vector stores
 chroma_db/
 *.db
+
+# Playwright MCP artifacts (screenshots, per-step snapshots, console logs)
 .playwright-mcp
+learn/_artifacts/
