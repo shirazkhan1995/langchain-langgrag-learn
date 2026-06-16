@@ -53,19 +53,44 @@ INTERVIEW_PREP.md was built for round-1's even split (Agents 33 / RAG 33 / Playw
 
 ---
 
+## 1.5 ⭐ Your real assets — LEAD WITH THESE (not the learning repo)
+
+Deep analysis of `Combined folder/` found **three real, production Cyndx frameworks** that outrank the langchain learning repo for *this* interviewer. Lead your demos with these.
+
+**🥇 `playwright_api_tests` — the crown jewel (maps 1:1 to his headline).**
+A production **GenAI testing** framework. What it proves, with files to name:
+- **LLM-as-judge over HTTP** — TS Playwright → Python **DeepEval sidecar** (`lib/evalsClient.ts` POSTs `/evaluate`). Scores chat quality (DAG), relevancy (custom GEval), deep-research section coverage (DAG), and PDF layout (vision LLM), with thresholds that gate the pipeline. → *this is the "LLM Evaluation" line in his headline, in production.*
+- **LLM-generated chaos testing** (`helpers/chaosHelper.ts`, `tests/chaos/chaos.spec.ts`) — an LLM generates semantically contradictory API inputs (`is_bankrupt=true + is_projected_to_raise=true`); you hit the API; an LLM judge scores whether the system **silently degraded** (200 OK + normal-looking results despite nonsense input). Hard-fail on 5xx, `expect.soft` on the eval score. → *your single most impressive, original answer to "how do you test non-deterministic AI."*
+- **Multi-model** via LiteLLM proxy (`lib/liteLlmClient.ts`), multi-env config, BigQuery metrics, container CI with the evals service as a **sidecar**.
+
+**🥈 `playwright_e2e_test` — your classic-Playwright-depth evidence (§6), with honest caveats.**
+78 specs, abstract `Base` POM + `POMManager` facade, an 873-line fixture layer, dependency-based auth/`storageState`, 6-way CI sharding, Allure. Solid — **but own its debt:** it's **XPath-dominant** (almost no `getByRole`/`getByTestId`) and has **50+ `waitForTimeout` hard sleeps**. Say: *"It's mature but carries real debt — I'd migrate to user-facing locators and replace hard sleeps with web-first assertions, and here's why."* (Mirrors his fundamentals-first value.)
+
+**🥉 `evals` (Python DeepEval service) + the langchain repo — supporting depth.**
+`evals` is the Python brain the api_tests call (GEval/DAG/groundedness — INTERVIEW_PREP §6.6) **and your richest Python-OOP evidence** (see §4.5). The langchain repo (LangGraph/RAG/`agent.py`) is now conceptual scaffolding — use it to prove you know the primitives; don't open with it.
+
+> **NDA caution:** this is Cyndx's code. Discuss it at the **architecture/pattern level** (that's what impresses) — don't paste proprietary data, prompts, or secrets; frame everything as "my approach."
+
+### Real war stories (stronger than the learn/08 MCP ones)
+- **undici 30s timeout → axios.** Playwright's fetch (undici) hard-caps response headers at ~30s independent of your configured timeout; long-running **vision-LLM PDF evals** take minutes and died at 30s. Fix: route eval calls through **axios** with a custom timeout + retry-on-5xx with backoff. *Lesson: know your HTTP client's hidden limits.*
+- **Playwright/container version lockstep.** The CI evals image is tagged `pw<version>` and **must match `@playwright/test`** in package.json — mismatched browser/client versions is the primary CI failure mode. *Lesson: pin and align versions across the test + browser + container boundary.*
+- **The logprobs wrapper (Python OOP in action).** DeepEval's GEval requests `logprobs` for confidence; Gemini via the OpenAI-compatible endpoint doesn't support them → errors + 6-attempt retry loops. Fix: **subclass `LiteLLMModel`** and **override** `generate_raw_response`/`a_generate_raw_response` to return `(None, 0.0)` so DeepEval cleanly falls back to text scoring (`evals/src/evals/models.py`). *Doubles as your inheritance + override example — see §4.5.*
+
+---
+
 ## 2. The 3-day schedule (Sun → Wed)
 
 Ratio for these days: ~**30% hands-on** (re-run, tweak, open a trace) / **70% explaining out loud**. Your credibility is "I built it"; your *score* is what you can articulate.
 
 ### SUNDAY (today, remaining hours) — Reframe + Python fundamentals
 1. **Read this doc fully.** Internalize the re-weighting and the two postures.
-2. **Python OOP & fundamentals (§4) — the big one.** Work through every item; *say each definition out loud* and write a 5-line example. Target: you can define encapsulation/abstraction/inheritance/polymorphism crisply, explain `try/except/else/finally`, write a custom exception, and explain decorators/generators/context managers.
-3. **Study the centerpiece (§3).** Re-read Chandan's Post B. Re-skim your `agent.py`/`agent_v2.py`. Rehearse the flip talk-track until it's natural.
+2. **Python OOP & fundamentals (§4) — the big one.** Work through every item; *say each definition out loud* + write a 5-line example. **Then do the §4.5 drill** — open `evals/models.py`, `factory.py`, `loader.py` and anchor each OOP concept to a class you actually wrote (and its Python idiom). This is the highest-leverage OOP prep: it turns the gap into your strongest answer.
+3. **Study the centerpiece (§3).** Re-read your **real** `playwright_api_tests` chaos flow + `evalsClient` bridge (the production version of his idea), then Chandan's Post B. Rehearse the flip until it's natural.
 
-### MONDAY — Playwright depth + API/PyTest
-1. **Playwright framework engineering (§6).** Architecture (why it's stable/fast vs Selenium), auto-waiting & web-first assertions, locator strategy, fixtures, POM, config/projects, parallelism & sharding, **trace viewer**, network mocking, `storageState` auth. **Run your `Combined folder/playwright_e2e_test` suite and open one trace** so you can describe it from memory.
-2. **API testing + PyTest (§5).** Fixtures/`conftest.py`/`parametrize`/markers, `requests`/`httpx`, assertion design, schema validation, request chaining, `pytest-xdist` parallelism. Connect to `agent.py`'s generated pytest output.
-3. **Selenium contrast (§6).** WebDriver/JSON-wire, wait types & why flakiness, the PW-vs-Selenium table.
+### MONDAY — Playwright depth (your real frameworks) + API/PyTest
+1. **Walk `playwright_api_tests` end-to-end (§1.5, §3).** Be able to narrate the chaos flow from memory (LLM generates scenario → API call → format → LLM judge → `expect.soft` on silent degradation) and the `evalsClient` HTTP bridge to the DeepEval sidecar. This is your strongest, most-tailored demo — rehearse it cold.
+2. **Classic Playwright depth via `playwright_e2e_test` (§6).** Architecture (why it's stable/fast vs Selenium), auto-wait & web-first assertions, locator strategy, fixtures, POM (`Base` + `POMManager`), config/projects, sharding, **trace viewer**, `storageState`. **Open one trace** so you can describe it firsthand — and be ready to discuss its **XPath/hard-sleep debt** honestly (what you'd fix and why).
+3. **API testing + PyTest (§5)** + **Selenium contrast (§6).** PyTest fixtures/`conftest`/`parametrize`/markers/`xdist`; assertion layers; WebDriver/JSON-wire, wait types & flakiness, the PW-vs-Selenium table.
 
 ### TUESDAY — AI×testing synthesis + full mock
 1. **Synthesis pass at his intersection:** Playwright MCP agent (`learn/08`) · agentic RAG (`learn/07`) · LLM eval (DeepEval GEval/DAG/groundedness, INTERVIEW_PREP §6.6) · self-healing & AI test-gen. Be able to draw the whole picture on a whiteboard: *user story → agent drives browser via Playwright MCP → generates/heals tests → DeepEval scores validity → CI gate.*
@@ -83,16 +108,16 @@ Ratio for these days: ~**30% hands-on** (re-run, tweak, open a trace) / **70% ex
 
 This is the moment that wins or loses the round. **Expect him to steer here** — it's his favorite topic and your project sits right on it.
 
-**The trap:** if you present `agent.py` as "I generate pytest from an OpenAPI spec," that *is* the generic Swagger→test generator he publicly dismisses. Don't stop there.
+**The trap:** leading with the langchain `agent.py` ("I generate pytest from an OpenAPI spec") *as your main thing* — that's the generic Swagger→test generator he publicly dismisses. Don't open with it.
 
-**The flip (rehearse verbatim until natural):**
-> "I built an OpenAPI→pytest workflow — parse the spec, generate tests, run them, and an LLM triages the failures. But the obvious limitation is exactly the one you wrote about: a spec-only generator produces *generic* tests that don't match an existing framework's conventions — its fixtures, assertion helpers, naming, reusable flows. The fix is **RAG over the existing test suite**: embed the current tests, retrieve the assertion patterns and utilities at generation time, and condition the model on them so the output looks like the team wrote it. I've actually built every piece that needs — the RAG pipeline, an MCP integration, and a DeepEval harness to score whether generated tests are *valid* and grounded — I just haven't wired them into that specific 'learn-from-your-own-framework' loop yet. That's the natural next iteration."
+**The flip — and it's no longer hypothetical (you've shipped this).** Lead with your **real Cyndx GenAI testing work** (§1.5), then meet his exact idea:
+> "In production I've built two of the three things you describe. First, **LLM-as-judge gating**: my Playwright API suite calls a DeepEval service over HTTP to score AI-generated output — chat quality, relevancy, deep-research section coverage, even PDF layout via a vision model — with thresholds that gate the pipeline. Second, **LLM-driven test generation**: I feed the API's own filter schema to an LLM to generate adversarial 'chaos' scenarios — semantically contradictory inputs — then a judge scores whether the system *silently degraded* instead of failing loudly. The third piece — your idea of **RAG over the existing suite so generated tests match house style** — is the natural next layer, and I already own the components: the RAG pipeline, the MCP integration, and the eval harness to score that the output is valid and grounded. I'd embed the existing tests, retrieve their assertion patterns and utilities at generation time, and condition on them."
 
 **Why this lands with him specifically:**
-- You **independently identify his exact insight** (don't ignore the existing framework) — peer-level, not parroting.
-- You show **judgment about the limitation of your own work** (he values precision/honesty — Allscripts healthcare background).
-- You **already own the components** (RAG, MCP, eval) — you're not theorizing.
-- It naturally pivots into your strongest material: RAG retrieval strategies, MCP, and **LLM evaluation** (his headline skill).
+- You've **actually shipped** LLM-as-judge + LLM-driven test generation — peer-level, not theory.
+- You **independently arrive at his exact insight** (don't ignore the existing framework) and can extend it.
+- You show **judgment about your own gaps** (no contract/schema validation yet; eval criteria aren't versioned) — he values that precision (Allscripts healthcare background).
+- It pivots into your strongest material: RAG retrieval strategies, MCP, and **LLM evaluation** (his headline skill).
 
 **Be ready for his follow-ups:**
 - *"How would you RAG over a test suite?"* → "Structure-aware chunking — each test function / fixture / helper is a unit, with metadata (module, tags, the endpoint it covers). Retrieve by the target endpoint + semantic similarity to pull the relevant assertion patterns and utilities. It's the document-structure-aware strategy from my chunking work, applied to code." (INTERVIEW_PREP §6 chunking)
@@ -154,6 +179,90 @@ finally:
 - **GIL (one-liner)** — "CPython's Global Interpreter Lock serializes bytecode, so threads don't give true CPU parallelism — fine for **I/O-bound** test work (network waits), use **multiprocessing** for CPU-bound. Playwright/pytest-xdist parallelize across **processes/workers**, sidestepping the GIL."
 
 > **Connect it back every time:** OOP isn't trivia to him — it's *how you architect a test framework*. POM = encapsulation + inheritance; fixtures = composition + dependency injection; custom exceptions = readable failures; decorators = pytest itself. Say that and you've answered the question *and* shown you're a framework engineer.
+
+### 4.5 🎯 Cover the OOP gap THROUGH your own code (highest-leverage OOP prep)
+
+**You don't have an OOP *knowledge* gap — you have an OOP *articulation* gap.** Every concept he tests is **already implemented in code you wrote.** His Post A advice was literally "core concepts **coupled with practical implementation**" — so don't recite textbook definitions; **anchor each concept to a class you built.** Then "define X" becomes "X — and here's where I implemented it," which is unbeatable and is exactly what he says freshers *can't* do.
+
+**One critical translation:** your richest OOP code is **TypeScript** (the Playwright frameworks — full deep-dive in **§4.6**), but **he tests Python**. So for each concept, also know the Python idiom. Your **`evals` project is Python** and already carries most of them.
+
+| OOP concept | In YOUR Python code (`evals`) — lead with this | In YOUR TS code (Playwright) | Python idiom to say |
+|---|---|---|---|
+| **Inheritance + method override** | `LiteLLMModelNoLogprobs(LiteLLMModel)` overrides `generate_raw_response` (`models.py`) — *also your logprobs war story* | `class LoginPage extends Base` | `class X(Base):` + `super().__init__()`; override by redefining the method |
+| **Abstraction / interface** | metrics program to DeepEval's `BaseMetric`; `PDFVisualFormattingMetric` implements its contract (`metrics/pdf_visual.py`) | `abstract class Base { protected page }` (`base.ts`) | `abc.ABC` + `@abstractmethod` (vs TS `abstract`/`interface`) |
+| **Polymorphism** | `build_metrics()` returns `list[BaseMetric]`; the runner calls each uniformly regardless of subtype (`factory.py`); every loader returns `list[LLMTestCase]` (`loader.py`) | custom matchers via `expect.extend` | duck typing — "if it has `.measure()`, I call `.measure()`"; no shared base required |
+| **Encapsulation** | metric classes hide LLM-call internals behind `measure()` | `private request<T>()` in `EvalsClient`; `protected page` in `Base` | `_protected` / `__private` (name-mangling) — convention, **not compiler-enforced** (key TS→Py difference) |
+| **Composition over inheritance** | the factory *composes* DAGs + metrics rather than subclassing | `POMManager` *has* 17 page objects (facade) | "has-a" via constructor args; favored over deep trees |
+| **Factory / registry pattern** | `build_metrics()` + `_DAG_REGISTRY` dict, dispatched by `match/case` (`factory.py`) | `CyndxApiClient` service-host map | `match/case` or a dict of callables |
+| **Exception handling** | `raise ValueError(f"Unknown metric type…")`, `raise FileNotFoundError(...)` with actionable messages (`factory.py`, `loader.py`) | retry-on-5xx + backoff in `evalsClient.ts` | `try/except/else/finally`; custom `Exception` subclass; `raise … from e` |
+| **Decorators** | pytest `@fixture`/`@parametrize` in the suite; `@property` | n/a | a callable wrapping a callable; `functools.wraps` |
+| **Type hints / generics** | `list[MetricConfig]`, `Callable[[], DeepAcyclicGraph]`, `str \| None` (`factory.py`) | generics `post<T>()`, `ApiResponse<T>` | `typing` / `TypeVar` / `Generic[T]` |
+| **Models / dunder** | Pydantic `BaseModel` subclasses in `agent.py` (`Field`, validation) | typed interfaces | `__init__`/`__repr__`/`__eq__`, `@dataclass`, Pydantic |
+
+**The drill (Sunday, ~45 min):** open `evals/src/evals/models.py`, `factory.py`, `loader.py`. For each, say out loud: *"This is \<concept\>; in Python that's \<idiom\>; in TS my Playwright framework does the same via \<idiom\>."* Then repeat for the TS classes in **§4.6** (`base.ts`, `pomManager.ts`, `apiClient.ts`, `evalsClient.ts`). After this you can answer any OOP question with a real example — the exact thing Post A says freshers can't.
+
+**TS→Python traps he might probe:**
+- **Access modifiers:** TS `private`/`protected` are compiler-enforced; Python `_`/`__` are convention + name-mangling, **not enforced**. Don't claim Python has "true private."
+- **Interfaces:** TS has `interface`; Python uses `abc.ABC` / `typing.Protocol` or plain duck typing.
+- **Overloading:** TS allows method overloads; **Python has none** — use default args / `*args` / `functools.singledispatch`.
+- **Python-only** (your TS code won't prompt these, so rehearse from §4): `@classmethod`/`@staticmethod`/`@property`, MRO/`super()`, context managers, generators, the mutable-default-arg trap.
+
+---
+
+## 4.6 🧱 OOP implemented deeply in your TypeScript frameworks (your strongest evidence)
+
+OOP is **language-agnostic** — and your *deepest* OOP work lives in the TS Playwright frameworks (`playwright_e2e_test` UI + `playwright_api_tests` API). Use these to prove **senior-level** mastery: not "I know the four pillars," but "I've designed class hierarchies, generics, and design patterns in a real framework." Each item names the file so you can pull it up, and gives the **Python pivot** so you can answer his Python questions from the same example. (§4.5 = the Python anchors; this is the TS deep-dive.)
+
+### The four pillars — in your real classes
+**Encapsulation** — you use all three access levels *deliberately*:
+- `protected page: Page`, `protected dismissMuiOverlays()`, `protected verifyMonthlyUniqueSearchCountWithNavigate()` — shared with subclasses, hidden from test code (`page/base.ts`).
+- `private extractCountFromLabel()` (`base.ts`); `private get chatFrame()` + `private async robustClick()` (`page/chatPage.ts`) — internal helpers.
+- `private readonly baseUrl / apiKey / timeoutMs` (`lib/evalsClient.ts`) — `readonly` = immutable after construction.
+- `private env / token / contextCache`, with only `post`/`get`/`dispose` public (`lib/apiClient.ts`).
+- *Python pivot:* TS `private`/`protected` are compiler-enforced; Python is `_`/`__` (name-mangling) by convention — state the contrast, he may probe it.
+
+**Abstraction** — `export abstract class Base` (`base.ts`) can't be instantiated; it defines the shared contract + behavior every page inherits. You also program to **interfaces**: `ApiResponse<T>` (`apiClient.ts`), `TestCase`/`MetricConfig`/`EvaluateResponse`/`EvalsClientOptions` (`evalsClient.ts`).
+- *Python pivot:* `abc.ABC` + `@abstractmethod`; TS `interface` → `typing.Protocol` or duck typing.
+
+**Inheritance** — every page object extends the abstract base: `export class ChatPage extends Base` (`chatPage.ts`), likewise `FinderPage`/`RaiserPage`/`AcquirerPage`/… (~17 classes). They inherit `selectors`, `switchToIframe`, `selectAll`, the loader-wait helpers; the `protected` methods are reachable by subclasses but not external callers — textbook "protected for inheritance."
+- *Python pivot:* `class ChatPage(Base):` + `super().__init__(page)`.
+
+**Polymorphism** — three flavors, all present:
+- *Parametric (generics)* — your strongest example: `post<T = any>(): Promise<ApiResponse<T>>`, `get<T>`, `private withRetry<T>(fn: () => Promise<T>)` (`apiClient.ts`), `private request<T>()` (`evalsClient.ts`). One implementation, every type.
+- *Subtype* — `POMManager` holds 17 page types; tests call shared `Base` methods on any of them uniformly (Liskov).
+- *Ad-hoc (union/literal types)* — `type ServiceName = 'photon' | 'doubloon' | …`, `MetricConfig.type: 'dag' | 'quality' | …`, `Promise<Frame | null>`.
+- *Python pivot:* generics → `TypeVar`/`Generic[T]`; unions → `Literal[...]` / `X | None`; subtype → duck typing.
+
+### Composition over inheritance (a senior talking point)
+- `POMManager` (`page/pomManager.ts`) **composes** 15+ page objects in its constructor (`this.finderPage = new FinderPage(page)`) and exposes them — it *has-a* set of pages, it doesn't *extend* anything. That's the **Facade** pattern: one entry point to many subsystems.
+- `CyndxApiClient` *has-a* `Map<string, APIRequestContext>` (connection cache); `Base` *has-a* `Page` via constructor injection.
+- Say: *"I inherit for is-a (every page is-a Base) and compose for has-a (the manager has pages, the client has a context cache) — inheritance one level deep, composition past that."*
+
+### Design patterns you've actually used (name these — senior signals)
+| Pattern | Where (your code) |
+|---|---|
+| **Facade** | `POMManager` — one object fronting 17 page subsystems |
+| **Factory method** | `ExtensionPage.create(...)` static factory (`pomManager.ts`); lazy `getExplorerPage()` |
+| **Adapter** | `keysToSnake`/`keysToCamel` bridge TS camelCase ↔ Python snake_case API (`evalsClient.ts`) |
+| **Object pool / lazy-init / memoization** | `getOrCreateContext()` caches one `APIRequestContext` per baseURL (`apiClient.ts`) |
+| **Decorator-style wrapper** | `withRetry<T>(fn)` wraps any call with retry; `request<T>` recurses on 5xx |
+| **Dependency Injection** | Playwright fixtures inject `apiClient`, auth tokens, datasets; `Page`/`token` constructor-injected |
+| **Disposable (RAII)** | `dispose()` releases pooled contexts (`apiClient.ts`) |
+| **Options object** | `new EvalsClient(options: EvalsClientOptions)` |
+
+### SOLID — demonstrable from this code (drop 1–2 if he goes deep)
+- **S** — `Base` = shared page utilities; each page = one surface; `CyndxApiClient` = HTTP; `EvalsClient` = eval service. One reason to change each.
+- **O** — add a page by extending `Base` (no edits to existing pages); add a backend by extending the `ServiceName` union + `SERVICE_HOSTS` map. Open to extension, closed to modification.
+- **L** — any page subclass is substitutable wherever `Base` is expected — that's what lets `POMManager` treat them uniformly.
+- **I** — fixture contracts split into `UserOptions`/`CompanyLists`/`ApiFixtures`/`ExtensionFixtures`, composed with `&` only where needed (`fixtures.ts`).
+- **D** — tests depend on the `Base`/interface abstractions + injected fixtures, not on `new`-ing concretions.
+
+### Advanced typing (bonus depth)
+- **Intersection types + generics** in the fixture container: `base.extend<UserOptions & CompanyLists & ApiFixtures & ExtensionFixtures>(...)`, typed as `TestType<…>` (`fixtures.ts`) — four contracts composed into one DI surface.
+- **Generic interface** `ApiResponse<T>` flows the body type end-to-end, so a caller gets a fully-typed `ApiResponse<FinderResult>`.
+
+### How to say it (spoken, ~30s)
+> "My deepest OOP is in my TypeScript Playwright frameworks. There's an `abstract Base` page class — encapsulating shared locators and wait helpers behind `protected` members — and ~17 page objects inherit it. Above them a `POMManager` *composes* the pages as a facade, so I inherit for is-a and compose for has-a. On the API side, `CyndxApiClient` and `EvalsClient` use generics — `post<T>`, `request<T>` — so one method is type-safe across every response shape, plus a generic `withRetry<T>` wrapper, an adapter converting camelCase to the Python API's snake_case, and a pooled `APIRequestContext` cache with a `dispose()` cleanup. The concepts are identical in Python — `abc.ABC`, `class X(Base)`, `TypeVar`/`Generic`, `@property` — only the syntax changes."
 
 ---
 
@@ -248,7 +357,8 @@ He's a **builder and a creator** — treat it as a peer technical conversation, 
 
 ## 9. Tailored question bank (rehearse out loud)
 
-**P0 — Python fundamentals (he WILL ask; see §4)**
+**P0 — Python fundamentals (he WILL ask; see §4 + §4.5)**
+- [ ] For EVERY OOP answer, cite a real class from your `evals`/Playwright code (§4.5) — concept + implementation, the way Post A demands.
 - [ ] Define the 4 OOP pillars, one sentence + example each.
 - [ ] instance vs class vs static method — when each? `@classmethod` as alt constructor.
 - [ ] `try/except/else/finally` semantics; write a custom exception; `raise from`; EAFP vs LBYL.
